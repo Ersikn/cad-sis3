@@ -1,0 +1,105 @@
+name: Practice 7 - Deploy to ECS
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cad-sis3-app-v2
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      AWS_REGION: us-east-1
+      APP_STACK: cad-sis3-app-v2
+      ECR_REPOSITORY: sis3-payment-images
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Python tests
+        working-directory: app
+        run: python3 -m unittest -v
+
+      - name: Sign in to AWS through OIDC
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Build and push the commit image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          repository=$(aws ecr describe-repositories \
+            --repository-names "$ECR_REPOSITORY" \
+            --query 'repositories[0].repositoryUri' --output text)
+
+          architecture=$(aws cloudformation describe-stacks \
+            --stack-name "$APP_STACK" \
+            --query "Stacks[0].Parameters[?ParameterKey=='CpuArchitecture'].ParameterValue | [0]" \
+            --output text)
+
+          case "$architecture" in
+            X86_64) platform=linux/amd64 ;;
+            ARM64) platform=linux/arm64 ;;
+            *) echo "Unknown ECS architecture: $architecture"; exit 1 ;;
+          esac
+
+          image="$repository:$GITHUB_SHA"
+          echo "EXPECTED_IMAGE=$image" >> "$GITHUB_ENV"
+
+          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+            --image-ids "imageTag=$GITHUB_SHA" >/dev/null 2>&1; then
+            echo "Commit image already exists: $image"
+          else
+            aws ecr get-login-password --region "$AWS_REGION" |
+              docker login --username AWS --password-stdin "${repository%%/*}"
+            docker build --platform "$platform" -t "$image" app
+            docker push "$image"
+          fi
+
+      - name: Deploy through CloudFormation
+        run: |
+          aws cloudformation deploy \
+            --stack-name "$APP_STACK" \
+            --template-file infra/app.yaml \
+            --capabilities CAPABILITY_IAM \
+            --parameter-overrides "ImageTag=$GITHUB_SHA" \
+            --no-fail-on-empty-changeset
+
+      - name: Verify the active image and health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          stack_output() {
+            aws cloudformation describe-stacks \
+              --stack-name "$APP_STACK" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" \
+              --output text
+          }
+
+          task_definition=$(aws ecs describe-services \
+            --cluster "$(stack_output ClusterName)" \
+            --services "$(stack_output ServiceName)" \
+            --query "services[0].deployments[?status=='PRIMARY'].taskDefinition | [0]" \
+            --output text)
+          active_image=$(aws ecs describe-task-definition \
+            --task-definition "$task_definition" \
+            --query "taskDefinition.containerDefinitions[?name=='app'].image | [0]" \
+            --output text)
+
+          echo "Task definition: $task_definition"
+          echo "Active image: $active_image"
+          test "$active_image" = "$EXPECTED_IMAGE"
+          curl -fsS --retry 5 --retry-all-errors --max-time 10 \
+            -w '\nHTTP %{http_code}\n' "$(stack_output ServiceUrl)/health"
