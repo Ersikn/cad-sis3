@@ -21,6 +21,19 @@ Parameters:
     Default: X86_64
     AllowedValues: [X86_64, ARM64]
 
+  PaymentQueueUrl:
+    Type: String
+  PaymentQueueArn:
+    Type: String
+  ProcessedTableName:
+    Type: String
+  ProcessedTableArn:
+    Type: String
+  AccountsTableName:
+    Type: String
+  AccountsTableArn:
+    Type: String
+
 Resources:
   Cluster:
     Type: AWS::ECS::Cluster
@@ -54,6 +67,21 @@ Resources:
             Principal:
               Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
+
+      Policies:
+        - PolicyName: PaymentWorker
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage]
+                Resource: !Ref PaymentQueueArn
+              - Effect: Allow
+                Action: [dynamodb:PutItem, dynamodb:GetItem]
+                Resource: !Ref ProcessedTableArn
+              - Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !Ref AccountsTableArn
 
   LoadBalancerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -95,6 +123,9 @@ Resources:
       TargetType: ip
       Protocol: HTTP
       Port: 8080
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
       HealthCheckPath: /health
       HealthCheckIntervalSeconds: 15
       HealthyThresholdCount: 2
@@ -137,6 +168,25 @@ Resources:
               awslogs-group: !Ref AppLogs
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: app
+
+        - Name: worker
+          Essential: true
+          Image: !Sub "${ImageRepositoryUri}:${ImageTag}"
+          Command: [python, worker.py]
+          StopTimeout: 30
+          Environment:
+            - Name: PAYMENT_QUEUE_URL
+              Value: !Ref PaymentQueueUrl
+            - Name: PROCESSED_TABLE
+              Value: !Ref ProcessedTableName
+            - Name: ACCOUNTS_TABLE
+              Value: !Ref AccountsTableName
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref AppLogs
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: worker
 
   Service:
     Type: AWS::ECS::Service

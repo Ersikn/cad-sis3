@@ -26,7 +26,9 @@ jobs:
 
       - name: Run Python tests
         working-directory: app
-        run: python3 -m unittest -v
+        run: |
+          python3 -m pip install -r requirements.txt
+          python3 -m unittest -v
 
       - name: Sign in to AWS through OIDC
         uses: aws-actions/configure-aws-credentials@v6.3.0

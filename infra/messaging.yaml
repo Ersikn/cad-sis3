@@ -1,0 +1,90 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SIS 3 payment events, redrive queue and ledger tables
+
+Resources:
+  PaymentEvents:
+    Type: AWS::SNS::Topic
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  PaymentQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 345600
+      ReceiveMessageWaitTimeSeconds: 10
+      VisibilityTimeout: 25
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  PaymentQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref PaymentQueue]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt PaymentQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref PaymentEvents
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  PaymentSubscription:
+    Type: AWS::SNS::Subscription
+    DependsOn: PaymentQueuePolicy
+    Properties:
+      TopicArn: !Ref PaymentEvents
+      Protocol: sqs
+      Endpoint: !GetAtt PaymentQueue.Arn
+      RawMessageDelivery: true
+
+  ProcessedPayments:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: paymentId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: paymentId
+          KeyType: HASH
+
+  Accounts:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: accountId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: accountId
+          KeyType: HASH
+
+Outputs:
+  TopicArn:
+    Value: !Ref PaymentEvents
+  QueueUrl:
+    Value: !Ref PaymentQueue
+  QueueArn:
+    Value: !GetAtt PaymentQueue.Arn
+  DlqUrl:
+    Value: !Ref DeadLetterQueue
+  ProcessedTableName:
+    Value: !Ref ProcessedPayments
+  ProcessedTableArn:
+    Value: !GetAtt ProcessedPayments.Arn
+  AccountsTableName:
+    Value: !Ref Accounts
+  AccountsTableArn:
+    Value: !GetAtt Accounts.Arn
