@@ -65,7 +65,10 @@ jobs:
           else
             aws ecr get-login-password --region "$AWS_REGION" |
               docker login --username AWS --password-stdin "${repository%%/*}"
-            docker build --platform "$platform" -t "$image" app
+            if ! docker build --build-arg PYTHON_BASE=docker.io/library/python:3.13-slim                 --platform "$platform" -t "$image" app; then
+              echo "Docker Hub build failed; retrying with the public ECR mirror"
+              docker build --platform "$platform" -t "$image" app
+            fi
             docker push "$image"
           fi
 

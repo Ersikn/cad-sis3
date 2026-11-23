@@ -1,4 +1,5 @@
-FROM public.ecr.aws/docker/library/python:3.13-slim
+ARG PYTHON_BASE=public.ecr.aws/docker/library/python:3.13-slim
+FROM ${PYTHON_BASE}
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY requirements.txt .
